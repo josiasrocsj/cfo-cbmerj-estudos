@@ -1,0 +1,1 @@
+(()=>{const C=window.CFO;for(const s of C.subjects){C.blocks[s]=C.blocks[s]||[];C.reviews[s]=C.reviews[s]||[];}})();
