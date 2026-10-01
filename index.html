@@ -30,14 +30,106 @@
 <div class="label">Navegação</div><button class="nav active" data-view="home">🏠 Início</button><button class="nav" data-view="questions">📝 Questões</button><button class="nav" data-view="reviews">📘 Revisões</button>
 <div class="label">Matérias</div><div id="subjects"></div></aside>
 <main class="main">
-<div class="top"><button class="btn mobile" onclick="document.getElementById('side').classList.toggle('open')">☰ Menu</button><div class="tabs"><button class="tab active" data-tab="questions">Questões</button><button class="tab" data-tab="reviews">Revisões</button></div><input id="search" class="search" placeholder="Buscar assunto ou palavra-chave..."></div>
+<div class="top"><button class="btn mobile" onclick="document.getElementById('side').classList.toggle('open')">☰ Menu</button><div class="tabs"><button class="tab active" data-tab="questions">Questões</button><button class="tab" data-tab="reviews">Revisões</button></div><input id="search" class="search" placeholder="Buscar assunto ou palavra-chave..."><button id="syncBtn" class="btn" onclick="openSync()">☁️ Entrar / sincronizar</button></div>
 <div id="content"></div></main></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>window.CFO={subjects:["História","Física","Matemática","Biologia","Geografia","Química"],blocks:{},reviews:{}};</script>
 <script src="data/base.js"></script><script src="data/live.js"></script>
 <script>
-const D=window.CFO,L=["A","B","C","D"],KEY="cfo-cbmerj-progress-v1";const saved=JSON.parse(localStorage.getItem(KEY)||"{}");
+const D=window.CFO,L=["A","B","C","D"],KEY="cfo-cbmerj-progress-v1";
+let saved=JSON.parse(localStorage.getItem(KEY)||"{}");
+const SB_URL="https://flflezfdzcfajxcjjlgy.supabase.co";
+const SB_KEY="sb_publishable_2_-4FLbrZcDQdU2mIQBhfA_EbMyIQGD";
+const sb=window.supabase.createClient(SB_URL,SB_KEY);
+let sessionUser=null;
 let S={view:"home",tab:"questions",subject:"História",topic:0,search:"",filter:"all",qpos:0};
 function save(){localStorage.setItem(KEY,JSON.stringify(saved))}
+function setSyncLabel(){
+ const b=document.getElementById("syncBtn"); if(!b)return;
+ b.textContent=sessionUser?"☁️ Sincronizado":"☁️ Entrar / sincronizar";
+}
+async function initCloud(){
+ const {data}=await sb.auth.getSession();
+ sessionUser=data.session?.user||null;
+ setSyncLabel();
+ if(sessionUser){await syncLocalToCloud();await loadCloudProgress();render();}
+}
+async function openSync(){
+ if(sessionUser){
+   if(confirm("Você está sincronizado. Deseja sair desta conta neste dispositivo?")){
+     await sb.auth.signOut();sessionUser=null;setSyncLabel();alert("Conta desconectada neste dispositivo.");
+   }
+   return;
+ }
+ const email=prompt("Digite o e-mail que será usado para sincronizar seu progresso:");
+ if(!email)return;
+ const password=prompt("Digite sua senha de sincronização (mínimo 6 caracteres):");
+ if(!password)return;
+ let {data,error}=await sb.auth.signInWithPassword({email,password});
+ if(error){
+   if(!confirm("Não foi possível entrar com esses dados. Deseja criar uma conta de sincronização com este e-mail e senha?"))return;
+   const created=await sb.auth.signUp({email,password});
+   if(created.error){alert("Não foi possível criar a conta: "+created.error.message);return;}
+   if(!created.data.session){alert("Conta criada. Verifique seu e-mail para confirmar a conta e depois volte ao site para entrar.");return;}
+   data=created.data;
+ }
+ sessionUser=data.user||data.session?.user||null;
+ setSyncLabel();
+ if(sessionUser){await syncLocalToCloud();await loadCloudProgress();render();alert("Progresso sincronizado. Agora ele ficará disponível nos outros dispositivos ao entrar com a mesma conta.");}
+}
+function findSubjectForQuestionId(id){
+ for(const s of D.subjects)for(const b of (D.blocks[s]||[]))for(const q of (b.questions||[]))if((q.id||"")===id)return s;
+ return "";
+}
+function findSubjectForReviewId(id){
+ for(const s of D.subjects)for(const r of (D.reviews[s]||[]))if((r.id||r.title)===id)return s;
+ return "";
+}
+async function syncLocalToCloud(){
+ if(!sessionUser)return;
+ const qrows=[],rrows=[];
+ for(const s of D.subjects){
+   (D.blocks[s]||[]).forEach((b,bi)=>(b.questions||[]).forEach((q,qi)=>{
+     const k=qkey(s,bi,qi),v=saved[k]; if(!v)return;
+     qrows.push({user_id:sessionUser.id,question_id:q.id||b.id+"|"+qi,subject:s,selected:v.selected,is_correct:!!v.correct,answered_at:v.at||new Date().toISOString()});
+   }));
+   (D.reviews[s]||[]).forEach((r,i)=>{
+     const k=rkey(s,i),v=saved[k]; if(!v)return;
+     rrows.push({user_id:sessionUser.id,review_id:r.id||r.title,subject:s,completed:true,completed_at:typeof v==="object"&&v.at?v.at:new Date().toISOString()});
+   });
+ }
+ if(qrows.length)await sb.from("question_progress").upsert(qrows,{onConflict:"user_id,question_id"});
+ if(rrows.length)await sb.from("review_progress").upsert(rrows,{onConflict:"user_id,review_id"});
+}
+async function loadCloudProgress(){
+ if(!sessionUser)return;
+ const [qr,rr]=await Promise.all([
+   sb.from("question_progress").select("question_id,selected,is_correct,answered_at"),
+   sb.from("review_progress").select("review_id,completed,completed_at")
+ ]);
+ if(!qr.error)(qr.data||[]).forEach(x=>{
+   const s=findSubjectForQuestionId(x.question_id); if(!s)return;
+   const b=(D.blocks[s]||[]).findIndex(bl=>(bl.questions||[]).some(q=>(q.id||"")===x.question_id));
+   if(b<0)return; const qi=D.blocks[s][b].questions.findIndex(q=>(q.id||"")===x.question_id); if(qi<0)return;
+   saved[qkey(s,b,qi)]={selected:x.selected,correct:x.is_correct,at:x.answered_at};
+ });
+ if(!rr.error)(rr.data||[]).forEach(x=>{
+   const s=findSubjectForReviewId(x.review_id); if(!s||!x.completed)return;
+   const i=(D.reviews[s]||[]).findIndex(r=>(r.id||r.title)===x.review_id); if(i>=0)saved[rkey(s,i)]={done:true,at:x.completed_at};
+ });
+ save();
+}
+async function saveQuestionCloud(s,bi,qi,v){
+ if(!sessionUser)return;
+ const q=D.blocks[s][bi].questions[qi],id=q.id||D.blocks[s][bi].id+"|"+qi;
+ await sb.from("question_progress").upsert({user_id:sessionUser.id,question_id:id,subject:s,selected:v.selected,is_correct:!!v.correct,answered_at:v.at},{onConflict:"user_id,question_id"});
+}
+async function saveReviewCloud(s,i,done){
+ if(!sessionUser)return;
+ const r=D.reviews[s][i],id=r.id||r.title;
+ if(done) await sb.from("review_progress").upsert({user_id:sessionUser.id,review_id:id,subject:s,completed:true,completed_at:new Date().toISOString()},{onConflict:"user_id,review_id"});
+ else await sb.from("review_progress").delete().eq("user_id",sessionUser.id).eq("review_id",id);
+}
 function qkey(s,b,q){const x=D.blocks[s][b].questions[q];return "q|"+s+"|"+(x.id||D.blocks[s][b].id+"|"+q)}
 function rkey(s,i){const x=D.reviews[s][i];return "r|"+s+"|"+(x.id||x.title)}
 function setup(){const box=document.getElementById("subjects");D.subjects.forEach(s=>{const b=document.createElement("button");b.className="subject";b.textContent=s;b.onclick=()=>{S.subject=s;S.view=S.tab;S.topic=0;S.qpos=0;render();document.getElementById("side").classList.remove("open")};box.appendChild(b)});document.querySelectorAll(".nav").forEach(b=>b.onclick=()=>{S.view=b.dataset.view;render()});document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{S.tab=b.dataset.tab;S.view=b.dataset.tab;render()});document.getElementById("search").oninput=e=>{S.search=e.target.value.toLowerCase().trim();S.qpos=0;render()}}
@@ -58,7 +150,7 @@ function goQ(i){S.qpos=i;questions();window.scrollTo({top:0,behavior:"smooth"})}
 function moveQ(d){const list=questionList();S.qpos=Math.max(0,Math.min(list.length-1,S.qpos+d));questions();window.scrollTo({top:0,behavior:"smooth"})}
 function qhtml(bi,qi,q){const r=saved[qkey(S.subject,bi,qi)],ans=!!r;return '<article class="card" id="q-'+bi+'-'+qi+'"><div class="qhead"><h3>'+(q.title?q.title+" — ":"")+q.q+'</h3><span class="badge">Questão '+(qi+1)+'</span></div>'+(q.figure||"")+'<div class="options">'+q.options.map((o,i)=>{let c="opt";if(ans){if(i===q.correct)c+=" correct";else if(i===r.selected)c+=" wrong"}return '<button class="'+c+'" '+(ans?"disabled":"")+' onclick="answer('+bi+','+qi+','+i+')"><span class="letter">'+L[i]+'.</span><span>'+o+'</span></button>'}).join("")+'</div>'+(ans?feedback(q,r):"")+'</article>'}
 function feedback(q,r){return '<div class="feedback"><div class="'+(r.correct?"ok":"bad")+'">'+(r.correct?"✓ Resposta correta":"✗ Resposta incorreta")+' — gabarito: '+L[q.correct]+'</div>'+(q.solution?'<div class="note"><b>🔎 Resolução passo a passo</b><br>'+q.solution+'</div>':'')+(q.explain||[]).map((e,i)=>'<div class="exp"><b>'+L[i]+'.</b> '+e+'</div>').join("")+(q.keep?'<div class="note"><b>O que guardar para o CFO:</b> '+q.keep+'</div>':'')+'<small>Respondida em '+new Date(r.at).toLocaleString("pt-BR")+'</small></div>'}
-function answer(bi,qi,i){const k=qkey(S.subject,bi,qi);if(saved[k])return;const q=D.blocks[S.subject][bi].questions[qi];saved[k]={selected:i,correct:i===q.correct,at:new Date().toISOString()};save();questions();setTimeout(()=>document.getElementById("q-"+bi+"-"+qi)?.scrollIntoView({behavior:"smooth",block:"center"}),40)}
+async function answer(bi,qi,i){const k=qkey(S.subject,bi,qi);if(saved[k])return;const q=D.blocks[S.subject][bi].questions[qi];saved[k]={selected:i,correct:i===q.correct,at:new Date().toISOString()};save();await saveQuestionCloud(S.subject,bi,qi,saved[k]);questions();setTimeout(()=>document.getElementById("q-"+bi+"-"+qi)?.scrollIntoView({behavior:"smooth",block:"center"}),40)}
 function reviews(){S.tab="reviews";const all=D.reviews[S.subject]||[];let list=all.map((r,i)=>({...r,_i:i})).filter(r=>!S.search||(r.title+" "+(r.body||"").replace(/<[^>]+>/g," ")).toLowerCase().includes(S.search));const rs=subjectStats(S.subject);if(!list.length){document.getElementById("content").innerHTML='<section class="hero"><h1>📘 Revisões — '+S.subject+'</h1>'+bar("Revisões marcadas como feitas",rs.reviewPct,"reviewbar")+'</section>'+subjectGrid("reviews")+'<div class="card">Nenhum assunto encontrado.</div>';return}if(!list.some(r=>r._i===S.topic))S.topic=list[0]._i;const r=all[S.topic],mark=!!saved[rkey(S.subject,S.topic)];document.getElementById("content").innerHTML='<section class="hero"><h1>📘 Revisões — '+S.subject+'</h1><p>Assuntos separados por matéria, com registro do que você já revisou.</p><div class="progress-wrap">'+bar("Revisões marcadas como feitas",rs.reviewPct,"reviewbar")+'</div><div class="stats"><div class="stat"><b>'+rs.dr+'/'+rs.tr+'</b> revisões feitas</div></div></section>'+subjectGrid("reviews")+'<div class="reviewgrid"><aside class="menu">'+list.map(x=>'<button class="topic '+(x._i===S.topic?"active":"")+'" onclick="S.topic='+x._i+';reviews()">'+(saved[rkey(S.subject,x._i)]?'<span class="done">✓ </span>':'')+x.title+'<small>'+(x.tag||"")+'</small></button>').join("")+'</aside><article class="card"><span class="badge">'+(r.tag||"Revisão")+'</span><h2>'+r.title+'</h2>'+r.body+'<p><button class="btn primary" onclick="toggleReview()">'+(mark?"✓ Já revisado":"Marcar como já revisado")+'</button></p></article></div>'}
-function toggleReview(){const k=rkey(S.subject,S.topic);saved[k]=!saved[k];save();reviews()}setup();render();
+async function toggleReview(){const k=rkey(S.subject,S.topic);const done=!saved[k];saved[k]=done?{done:true,at:new Date().toISOString()}:false;if(!done)delete saved[k];save();await saveReviewCloud(S.subject,S.topic,done);reviews()}setup();render();initCloud();
 </script></body></html>
