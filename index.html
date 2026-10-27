@@ -48,6 +48,29 @@ function setSyncLabel(){
  const b=document.getElementById("syncBtn"); if(!b)return;
  b.textContent=sessionUser?"☁️ Sincronizado":"☁️ Entrar / sincronizar";
 }
+async function loadCloudContent(){
+ try{
+   const [qb,rv]=await Promise.all([
+     sb.from("study_question_blocks").select("id,study_date,subject,title,topics,questions").order("study_date",{ascending:true}),
+     sb.from("study_reviews").select("id,study_date,subject,title,tag,body_html").order("study_date",{ascending:true})
+   ]);
+   if(!qb.error)(qb.data||[]).forEach(row=>{
+     if(!D.subjects.includes(row.subject)||!Array.isArray(row.questions))return;
+     D.blocks[row.subject]=D.blocks[row.subject]||[];
+     if(D.blocks[row.subject].some(x=>x.id===row.id))return;
+     const [y,m,d]=(row.study_date||"").split("-");
+     D.blocks[row.subject].push({
+       id:row.id,date:y&&m&&d?d+"/"+m+"/"+y:row.study_date,title:row.title,topics:row.topics||"",questions:row.questions
+     });
+   });
+   if(!rv.error)(rv.data||[]).forEach(row=>{
+     if(!D.subjects.includes(row.subject))return;
+     D.reviews[row.subject]=D.reviews[row.subject]||[];
+     if(D.reviews[row.subject].some(x=>x.id===row.id))return;
+     D.reviews[row.subject].push({id:row.id,title:row.title,tag:row.tag||"",body:row.body_html||""});
+   });
+ }catch(e){console.warn("Conteúdo em nuvem indisponível; usando conteúdo local.",e)}
+}
 async function initCloud(){
  const {data}=await sb.auth.getSession();
  sessionUser=data.session?.user||null;
@@ -139,7 +162,7 @@ function counts(){let tq=0,dq=0,cq=0,tr=0,dr=0;D.subjects.forEach(s=>{const x=su
 function bar(label,pct,kind){const shown=pct===null?"—":pct+"%";const width=pct===null?0:pct;return '<div class="progress-row"><div class="progress-head"><span>'+label+'</span><b>'+shown+'</b></div><div class="progress-track"><div class="progress-fill '+(kind||"")+'" style="width:'+width+'%"></div></div></div>'}
 function dashboard(){return '<div class="dashboard">'+D.subjects.map(s=>{const x=subjectStats(s);return '<div class="dash-card"><h3>'+s+'</h3>'+bar("Questões feitas",x.completion,"")+bar("Acerto nas respondidas",x.accuracy,"okbar")+bar("Revisões concluídas",x.reviewPct,"reviewbar")+'<div class="metric-line">'+x.dq+'/'+x.tq+' questões • '+x.dr+'/'+x.tr+' revisões</div></div>'}).join("")+'</div>'}
 function render(){document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===S.tab));document.querySelectorAll(".nav").forEach(x=>x.classList.toggle("active",x.dataset.view===S.view));if(S.view==="home")home();if(S.view==="questions")questions();if(S.view==="reviews")reviews()}
-function home(){const c=counts();document.getElementById("content").innerHTML='<section class="hero"><h1>Seu painel de estudos do CFO CBMERJ</h1><p>Um único endereço, atualizado diariamente. Por enquanto, o histórico fica salvo neste navegador/dispositivo.</p><div class="stats"><div class="stat"><b>'+c.dq+'/'+c.tq+'</b> questões feitas</div><div class="stat"><b>'+c.cq+'</b> acertos</div><div class="stat"><b>'+c.dr+'/'+c.tr+'</b> revisões marcadas</div></div><div class="progress-wrap">'+bar("Questões disponíveis já feitas",c.completion,"")+bar("Percentual de acerto nas questões feitas",c.accuracy,"okbar")+bar("Revisões marcadas como feitas",c.reviewPct,"reviewbar")+'</div></section><h2>Desempenho por matéria</h2>'+dashboard()+'<h2>Questões</h2>'+subjectGrid("questions")+'<h2>Revisões</h2>'+subjectGrid("reviews")}
+function home(){const c=counts();document.getElementById("content").innerHTML='<section class="hero"><h1>Seu painel de estudos do CFO CBMERJ</h1><p>Um único endereço, atualizado diariamente. Questões e revisões vêm da nuvem; ao entrar, seu progresso também fica sincronizado entre dispositivos.</p><div class="stats"><div class="stat"><b>'+c.dq+'/'+c.tq+'</b> questões feitas</div><div class="stat"><b>'+c.cq+'</b> acertos</div><div class="stat"><b>'+c.dr+'/'+c.tr+'</b> revisões marcadas</div></div><div class="progress-wrap">'+bar("Questões disponíveis já feitas",c.completion,"")+bar("Percentual de acerto nas questões feitas",c.accuracy,"okbar")+bar("Revisões marcadas como feitas",c.reviewPct,"reviewbar")+'</div></section><h2>Desempenho por matéria</h2>'+dashboard()+'<h2>Questões</h2>'+subjectGrid("questions")+'<h2>Revisões</h2>'+subjectGrid("reviews")}
 function questionList(){const bs=D.blocks[S.subject]||[],arr=[];[...bs].reverse().forEach((b,rev)=>{const bi=bs.length-1-rev;b.questions.forEach((q,qi)=>{const r=saved[qkey(S.subject,bi,qi)];if(S.filter==="todo"&&r)return;if(S.filter==="done"&&!r)return;const hay=(q.q+" "+q.options.join(" ")+" "+(b.topics||"")+" "+(q.title||"")).toLowerCase();if(S.search&&!hay.includes(S.search))return;arr.push({b,bi,q,qi})})});return arr}
 function questions(){S.tab="questions";const bs=D.blocks[S.subject]||[];let total=0,done=0,correct=0;bs.forEach((b,bi)=>b.questions.forEach((q,qi)=>{total++;const r=saved[qkey(S.subject,bi,qi)];if(r){done++;if(r.correct)correct++}}));const completion=total?Math.round(done/total*100):0,accuracy=done?Math.round(correct/done*100):null;const list=questionList();if(S.qpos>=list.length)S.qpos=Math.max(0,list.length-1);let out='<section class="hero"><h1>📝 Questões — '+S.subject+'</h1><p>Uma questão por vez. Use a barra numerada ou os botões Anterior/Próxima para navegar.</p><div class="stats"><div class="stat"><b>'+done+'/'+total+'</b> feitas</div><div class="stat"><b>'+correct+'</b> acertos</div><div class="stat"><b>'+(done-correct)+'</b> erros</div></div><div class="progress-wrap">'+bar("Questões disponíveis já feitas",completion,"")+bar("Percentual de acerto nas respondidas",accuracy,"okbar")+'</div><div class="filters"><button class="btn '+(S.filter==="all"?"active":"")+'" onclick="S.filter=\'all\';S.qpos=0;questions()">Todas</button><button class="btn '+(S.filter==="todo"?"active":"")+'" onclick="S.filter=\'todo\';S.qpos=0;questions()">Não feitas</button><button class="btn '+(S.filter==="done"?"active":"")+'" onclick="S.filter=\'done\';S.qpos=0;questions()">Feitas</button></div></section>'+subjectGrid("questions");if(!list.length){out+='<div class="card">Nenhuma questão encontrada.</div>';document.getElementById("content").innerHTML=out;return}
 const item=list[S.qpos],rec=saved[qkey(S.subject,item.bi,item.qi)];
@@ -152,5 +175,7 @@ function qhtml(bi,qi,q){const r=saved[qkey(S.subject,bi,qi)],ans=!!r;return '<ar
 function feedback(q,r){return '<div class="feedback"><div class="'+(r.correct?"ok":"bad")+'">'+(r.correct?"✓ Resposta correta":"✗ Resposta incorreta")+' — gabarito: '+L[q.correct]+'</div>'+(q.solution?'<div class="note"><b>🔎 Resolução passo a passo</b><br>'+q.solution+'</div>':'')+(q.explain||[]).map((e,i)=>'<div class="exp"><b>'+L[i]+'.</b> '+e+'</div>').join("")+(q.keep?'<div class="note"><b>O que guardar para o CFO:</b> '+q.keep+'</div>':'')+'<small>Respondida em '+new Date(r.at).toLocaleString("pt-BR")+'</small></div>'}
 async function answer(bi,qi,i){const k=qkey(S.subject,bi,qi);if(saved[k])return;const q=D.blocks[S.subject][bi].questions[qi];saved[k]={selected:i,correct:i===q.correct,at:new Date().toISOString()};save();await saveQuestionCloud(S.subject,bi,qi,saved[k]);questions();setTimeout(()=>document.getElementById("q-"+bi+"-"+qi)?.scrollIntoView({behavior:"smooth",block:"center"}),40)}
 function reviews(){S.tab="reviews";const all=D.reviews[S.subject]||[];let list=all.map((r,i)=>({...r,_i:i})).filter(r=>!S.search||(r.title+" "+(r.body||"").replace(/<[^>]+>/g," ")).toLowerCase().includes(S.search));const rs=subjectStats(S.subject);if(!list.length){document.getElementById("content").innerHTML='<section class="hero"><h1>📘 Revisões — '+S.subject+'</h1>'+bar("Revisões marcadas como feitas",rs.reviewPct,"reviewbar")+'</section>'+subjectGrid("reviews")+'<div class="card">Nenhum assunto encontrado.</div>';return}if(!list.some(r=>r._i===S.topic))S.topic=list[0]._i;const r=all[S.topic],mark=!!saved[rkey(S.subject,S.topic)];document.getElementById("content").innerHTML='<section class="hero"><h1>📘 Revisões — '+S.subject+'</h1><p>Assuntos separados por matéria, com registro do que você já revisou.</p><div class="progress-wrap">'+bar("Revisões marcadas como feitas",rs.reviewPct,"reviewbar")+'</div><div class="stats"><div class="stat"><b>'+rs.dr+'/'+rs.tr+'</b> revisões feitas</div></div></section>'+subjectGrid("reviews")+'<div class="reviewgrid"><aside class="menu">'+list.map(x=>'<button class="topic '+(x._i===S.topic?"active":"")+'" onclick="S.topic='+x._i+';reviews()">'+(saved[rkey(S.subject,x._i)]?'<span class="done">✓ </span>':'')+x.title+'<small>'+(x.tag||"")+'</small></button>').join("")+'</aside><article class="card"><span class="badge">'+(r.tag||"Revisão")+'</span><h2>'+r.title+'</h2>'+r.body+'<p><button class="btn primary" onclick="toggleReview()">'+(mark?"✓ Já revisado":"Marcar como já revisado")+'</button></p></article></div>'}
-async function toggleReview(){const k=rkey(S.subject,S.topic);const done=!saved[k];saved[k]=done?{done:true,at:new Date().toISOString()}:false;if(!done)delete saved[k];save();await saveReviewCloud(S.subject,S.topic,done);reviews()}setup();render();initCloud();
+async function toggleReview(){const k=rkey(S.subject,S.topic);const done=!saved[k];saved[k]=done?{done:true,at:new Date().toISOString()}:false;if(!done)delete saved[k];save();await saveReviewCloud(S.subject,S.topic,done);reviews()}
+async function bootstrap(){await loadCloudContent();setup();render();await initCloud();}
+bootstrap();
 </script></body></html>
